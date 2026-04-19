@@ -1,8 +1,6 @@
 # ── Dataset (thousands of images — do not commit) ──
 MOT16/
 
-# ── Large model weights ──
-*.pth
 
 # ── Large output video ──
 *.mp4
