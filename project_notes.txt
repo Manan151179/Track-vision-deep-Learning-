@@ -1,0 +1,123 @@
+TRACKVISION — AI-POWERED MULTI-OBJECT TRACKING SYSTEM
+======================================================
+
+PROJECT SUMMARY
+---------------
+Built an end-to-end multi-object tracking (MOT) system that detects, identifies, and tracks pedestrians across video frames using deep learning. The system combines a fine-tuned Faster R-CNN detector with a Siamese Network for re-identification, linked by a cosine-similarity tracker using the Hungarian algorithm. Deployed as a production-style web app (Streamlit) and a real-time webcam demo (Google Colab).
+
+
+PROBLEM STATEMENT
+-----------------
+Multi-object tracking is a core computer vision challenge: given a video, the system must (1) detect all pedestrians in each frame, (2) assign a consistent identity to each person across frames, and (3) maintain those identities even through occlusions, appearance changes, and crowded scenes. This project tackles the MOT16 benchmark, a widely-used evaluation dataset for pedestrian tracking.
+
+
+TECHNICAL APPROACH — 4-STAGE PIPELINE
+--------------------------------------
+
+Stage 1: Data Preparation & Augmentation
+  - Dataset: MOT16 (7 training sequences, ~5,000+ frames, dense pedestrian annotations)
+  - Parsed ground-truth CSV files, filtering to confirmed pedestrians (confidence=1, class=1)
+  - Converted bounding boxes from [left, top, width, height] to [x_min, y_min, x_max, y_max] for Faster R-CNN compatibility
+  - Augmentation pipeline: ColorJitter, RandomGrayscale, GaussianBlur — intentionally color/texture-only to preserve bounding box geometry
+
+Stage 2: Object Detection — Fine-Tuned Faster R-CNN
+  - Architecture: Faster R-CNN with ResNet-50 FPN backbone (pretrained on COCO)
+  - Fine-tuning: Replaced the classification head for 2 classes (background + pedestrian), trained for 5 epochs with AdamW optimizer (lr=1e-4)
+  - Mixed precision training (AMP) for faster convergence on GPU
+  - Custom PyTorch Dataset (MOT16Dataset) loads frames + annotations from all 7 training sequences
+  - Result: Fine-tuned detector saved as fasterrcnn_mot16_finetuned.pth (~165 MB, 41.3M parameters)
+
+Stage 3: Re-Identification — Siamese Network with Triplet Loss
+  - Goal: Learn an embedding space where crops of the same person are close together and crops of different people are far apart
+  - Architecture: Custom 3-layer CNN → 256-dimensional L2-normalised embedding
+      * 3x (Conv2d → BatchNorm → ReLU → MaxPool) → Flatten → Linear(512) → ReLU → Dropout → Linear(256)
+      * Total: 8.6M parameters
+  - Training data: ReidCropDataset extracts 128x64 crops per person-ID across frames, generates anchor/positive/negative triplets
+  - Loss: TripletMarginLoss (margin=0.5) — pushes anchor-positive pairs closer and anchor-negative pairs apart in embedding space
+  - Training: 10 epochs, Adam optimizer, AMP
+  - Result: Saved as siamese_reid_mot16.pth (~34 MB)
+
+Stage 4: Multi-Object Tracking — Hungarian Assignment with EMA
+  - Tracker class maintains a gallery of known identity embeddings
+  - For each new frame:
+      1. Detector produces bounding boxes
+      2. Siamese Network extracts embeddings for each detection
+      3. Cosine distance matrix computed between detections and gallery
+      4. Hungarian algorithm (scipy.optimize.linear_sum_assignment) finds optimal 1-to-1 matching minimising total cost
+      5. Matches above similarity threshold (0.85) get assigned existing IDs
+      6. Unmatched detections get new IDs
+  - EMA (Exponential Moving Average) updates gallery embeddings (alpha=0.9), allowing smooth adaptation to pose/lighting changes without being corrupted by single bad frames
+
+
+DEPLOYED FEATURES
+-----------------
+
+Feature 1: Web Application (Streamlit)
+  - Upload-based tracking: users upload a video clip → system processes it → displays the tracked output with labelled bounding boxes
+  - Configurable parameters: detection confidence, similarity threshold, EMA smoothing, output FPS — all adjustable via sidebar sliders
+  - Premium dark UI: glassmorphism cards, gradient accents, animated hero banner, Inter typeface
+  - Result metrics: total frames, unique IDs tracked, processing time, average FPS
+  - Download support: one-click download of the annotated output video
+  - H.264 re-encoding: output is converted to browser-compatible format via ffmpeg for inline playback
+  - Colab deployment: runs on Google Colab with GPU via cloudflared tunnel for public access
+
+Feature 2: Real-Time Webcam Tracking (Colab)
+  - Browser-based webcam capture using JavaScript (navigator.mediaDevices.getUserMedia)
+  - Frames sent as base64 JPEG from browser → decoded in Python → processed on GPU → displayed inline
+  - Live overlay with bounding boxes, track IDs, and real-time FPS counter
+  - Runs at ~2-5 FPS on A100 GPU (limited by JS-Python roundtrip, not GPU speed)
+  - Designed as a class demo / proof-of-concept for live pedestrian tracking
+
+
+TECHNOLOGIES & TOOLS
+--------------------
+Deep Learning:      PyTorch, torchvision, Faster R-CNN (ResNet-50 FPN), Siamese Network, Triplet Loss
+Computer Vision:    OpenCV, PIL/Pillow, bounding box regression, NMS, feature extraction
+Tracking Algorithm: Cosine similarity, Hungarian algorithm (scipy), EMA embedding updates
+Training:           Mixed precision (AMP), AdamW, custom PyTorch Datasets & DataLoaders
+Web App:            Streamlit, custom CSS (glassmorphism), ffmpeg for video encoding
+Deployment:         Google Colab (A100 GPU), cloudflared tunneling, Google Drive integration
+Real-Time:          Browser JavaScript (WebRTC/getUserMedia), base64 frame transfer, IPython display
+Data:               MOT16 benchmark dataset, ground-truth parsing, triplet mining
+
+
+KEY TECHNICAL DECISIONS & LEARNINGS
+------------------------------------
+1. Faster R-CNN over YOLO for detection — chosen for higher accuracy on the pedestrian class; trade-off is slower inference but acceptable for non-real-time applications
+
+2. Custom CNN over MobileNetV3 for ReID — the lightweight 3-layer CNN provides fast embedding extraction while maintaining discriminative power for the re-identification task
+
+3. Triplet Loss for metric learning — directly optimises the embedding space for identity matching, more effective than classification-based approaches for open-set re-identification
+
+4. Hungarian algorithm for data association — guarantees globally-optimal 1-to-1 matching between detections and tracks, avoiding greedy assignment errors
+
+5. EMA for gallery updates — prevents single-frame noise from corrupting track embeddings, enabling robust long-term tracking through appearance variations
+
+6. H.264 re-encoding — OpenCV's mp4v codec isn't browser-compatible; automated ffmpeg post-processing with faststart flag enables inline video playback
+
+7. MPS (Apple Metal) limitations — discovered that PyTorch's MPS backend has stability issues with Faster R-CNN; implemented CUDA-first device selection with CPU fallback
+
+
+PROJECT FILES
+-------------
+Deep_Learning/
+├── deep_learning.ipynb              # Main training notebook (4-stage pipeline)
+├── visualizations.ipynb             # Analysis plots and charts
+├── app.py                           # Streamlit web application
+├── tracker_engine.py                # Backend inference engine
+├── realtime_colab.ipynb             # Webcam real-time tracking demo
+├── deploy_colab.ipynb               # Colab deployment for Streamlit app
+├── requirements.txt                 # Python dependencies
+├── fasterrcnn_mot16_finetuned.pth   # Detector weights (41.3M params)
+├── siamese_reid_mot16.pth           # ReID weights (8.6M params)
+├── mot16_tracked.mp4                # Sample tracking output
+└── MOT16/                           # Dataset (train/test sequences)
+
+
+RESULTS
+-------
+- Successfully tracks pedestrians across video sequences with consistent ID assignment
+- Fine-tuned detector achieves strong pedestrian detection on MOT16 sequences
+- Siamese ReID network learns discriminative embeddings enabling robust cross-frame matching
+- Web app processes 100-frame clips in ~3-5 seconds on A100 GPU
+- Real-time webcam demo runs at ~2-5 FPS, sufficient for live class demonstrations

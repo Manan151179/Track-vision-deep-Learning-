@@ -1,0 +1,8 @@
+torch
+torchvision
+streamlit
+opencv-python
+scipy
+Pillow
+numpy
+#motmetrics
