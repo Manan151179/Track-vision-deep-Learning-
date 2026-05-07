@@ -554,6 +554,7 @@ def process_video(
         else:
             # Even with no detections, we must still age + predict all tracks.
             tracker.update(np.empty((0, 4)), [])
+            tids = []
 
         # --- Annotate confirmed tracks only (tid == -1 → tentative, skip) ---
         for box, tid in zip(boxes, tids):

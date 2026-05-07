@@ -5,4 +5,5 @@ opencv-python
 scipy
 Pillow
 numpy
-#motmetrics
+filterpy
+motmetrics
