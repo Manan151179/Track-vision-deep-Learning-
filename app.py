@@ -457,19 +457,23 @@ if uploaded_file is not None:
             )
             tmp_h264.close()
 
-            ffmpeg_result = subprocess.run(
-                [
-                    "ffmpeg", "-y", "-i", tmp_output.name,
-                    "-c:v", "libx264", "-preset", "fast",
-                    "-crf", "23", "-pix_fmt", "yuv420p",
-                    "-movflags", "+faststart",
-                    tmp_h264.name,
-                ],
-                capture_output=True, text=True,
-            )
+            try:
+                ffmpeg_result = subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-i", tmp_output.name,
+                        "-c:v", "libx264", "-preset", "fast",
+                        "-crf", "23", "-pix_fmt", "yuv420p",
+                        "-movflags", "+faststart",
+                        tmp_h264.name,
+                    ],
+                    capture_output=True, text=True,
+                )
+                ffmpeg_ok = ffmpeg_result.returncode == 0
+            except FileNotFoundError:
+                ffmpeg_ok = False
 
             # Use H.264 version if ffmpeg succeeded, else fall back
-            if ffmpeg_result.returncode == 0:
+            if ffmpeg_ok:
                 display_path = tmp_h264.name
             else:
                 display_path = tmp_output.name
