@@ -435,6 +435,10 @@ def main():
 
     args = parser.parse_args()
 
+    # ── Reconfigure stdout encoding ──
+    sys.stdout.reconfigure(encoding="utf-8")
+
+
     # ── Device ──
     if torch.cuda.is_available():
         device = torch.device("cuda")
