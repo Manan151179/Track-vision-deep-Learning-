@@ -161,13 +161,20 @@ python evaluate_mota.py --det-thresh 0.75 --sim-thresh 0.80 --iou-thresh 0.5
 
 # Save output to a file (stdout is still printed; --force to overwrite existing)
 python evaluate_mota.py --output eval_results.txt
+
+# Ablation: disable Kalman filter (pure IoU + appearance matching, no motion prediction)
+python evaluate_mota.py --no-kf --output eval_results-no-kf.txt
 ```
 
 All `argparse` defaults match the web app defaults. The script prints a
 formatted metrics table (MOTA, MOTP, ID switches, FP, FN, Precision,
 Recall, IDF1) and a headline summary line.
 
-Pre-computed results are in `eval_results-full.txt`.
+Pre-computed results are in `eval_results-full.txt` (full pipeline) and
+`eval_results-no-kf.txt` (Kalman filter disabled). The ablation shows
+that removing the filter has almost no effect on MOTA (66.1% → 65.7%)
+but increases ID switches by 18% (1,854 → 2,190) — the filter's value
+is identity stability during occlusion, not raw detection accuracy.
 
 ---
 
@@ -214,7 +221,8 @@ Deep_Learning/
 ├── fasterrcnn_mot16_finetuned.pth   # Detector weights — Git LFS (~165 MB)
 ├── siamese_reid_mot16.pth           # ReID model weights — Git LFS (~34 MB)
 │
-├── eval_results-full.txt      # Saved MOT16 evaluation results
+├── eval_results-full.txt      # Saved MOT16 evaluation results (full pipeline)
+├── eval_results-no-kf.txt     # Kalman filter ablation results
 ├── project_notes.txt          # Narrative design documentation
 ├── requirements.txt           # pip dependencies
 │
