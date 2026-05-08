@@ -536,6 +536,8 @@ def main():
 
     finally:
         if _outfile:
+            # restore sys.stdout first, otherwise Python's shutdown tries to flush the _Tee
+            sys.stdout = sys.stdout._stdout
             _outfile.close()
 
 
