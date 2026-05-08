@@ -411,7 +411,9 @@ class _Tee:
         self._stdout = stdout
     def write(self, data):
         self._stdout.write(data)
-        self._file.write(data)
+        # Skip \r-only progress updates — they overwrite in terminal but pile up in files
+        if not (data.endswith('\r') and '\n' not in data):
+            self._file.write(data)
     def flush(self):
         self._stdout.flush()
         self._file.flush()
