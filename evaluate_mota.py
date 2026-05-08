@@ -404,6 +404,19 @@ def evaluate_sequence(seq_name, mot16_root, detector, embed_model, device,
     return acc
 
 
+# ── Tee: write to stdout and a file simultaneously ────────────────────────
+class _Tee:
+    def __init__(self, file, stdout):
+        self._file = file
+        self._stdout = stdout
+    def write(self, data):
+        self._stdout.write(data)
+        self._file.write(data)
+    def flush(self):
+        self._stdout.flush()
+        self._file.flush()
+
+
 # ── Main ──────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(
@@ -432,78 +445,96 @@ def main():
     parser.add_argument("--ema-alpha", type=float, default=0.90)
     parser.add_argument("--iou-thresh", type=float, default=0.5,
                         help="IoU threshold for matching (default: 0.5)")
+    parser.add_argument("--output", default=None,
+                        help="Save results to this file in addition to stdout")
+    parser.add_argument("--force", action="store_true",
+                        help="Overwrite --output file if it already exists")
 
     args = parser.parse_args()
+
+    if args.output and os.path.exists(args.output) and not args.force:
+        print(f"[!] Output file already exists: {args.output}")
+        print("    Use --force to overwrite.")
+        sys.exit(1)
 
     # ── Reconfigure stdout encoding ──
     sys.stdout.reconfigure(encoding="utf-8")
 
+    _outfile = None
+    try:
+        if args.output:
+            _outfile = open(args.output, "w", encoding="utf-8")
+            sys.stdout = _Tee(_outfile, sys.stdout)
 
-    # ── Device ──
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        print(f"Device: CUDA ({torch.cuda.get_device_name(0)})")
-    else:
-        device = torch.device("cpu")
-        print("Device: CPU (no GPU — this will be slow but works fine)")
+        # ── Device ──
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            print(f"Device: CUDA ({torch.cuda.get_device_name(0)})")
+        else:
+            device = torch.device("cpu")
+            print("Device: CPU (no GPU — this will be slow but works fine)")
 
-    # ── Load models ──
-    print("Loading models...")
-    detector, embed_model = load_models(
-        device, args.detector_weights, args.reid_weights
-    )
-    print("Models loaded ✓\n")
-
-    # ── Evaluate each sequence ──
-    accumulators = []
-    seq_names = []
-
-    for seq in args.sequences:
-        print(f"Evaluating {seq}...")
-        acc = evaluate_sequence(
-            seq, args.mot16_root, detector, embed_model, device,
-            args.det_thresh, args.sim_thresh, args.ema_alpha, args.iou_thresh,
+        # ── Load models ──
+        print("Loading models...")
+        detector, embed_model = load_models(
+            device, args.detector_weights, args.reid_weights
         )
-        if acc is not None:
-            accumulators.append(acc)
-            seq_names.append(seq)
+        print("Models loaded ✓\n")
 
-    if not accumulators:
-        print("No sequences evaluated.")
-        return
+        # ── Evaluate each sequence ──
+        accumulators = []
+        seq_names = []
 
-    # ── Compute metrics ──
-    print("\n" + "=" * 70)
-    print("MOT EVALUATION RESULTS")
-    print("=" * 70)
+        for seq in args.sequences:
+            print(f"Evaluating {seq}...")
+            acc = evaluate_sequence(
+                seq, args.mot16_root, detector, embed_model, device,
+                args.det_thresh, args.sim_thresh, args.ema_alpha, args.iou_thresh,
+            )
+            if acc is not None:
+                accumulators.append(acc)
+                seq_names.append(seq)
 
-    mh = mm.metrics.create()
+        if not accumulators:
+            print("No sequences evaluated.")
+            return
 
-    # Per-sequence metrics
-    summary = mh.compute_many(
-        accumulators, names=seq_names,
-        metrics=["num_frames", "mota", "motp", "num_switches",
-                 "num_false_positives", "num_misses",
-                 "precision", "recall", "idf1"],
-        generate_overall=True,
-    )
+        # ── Compute metrics ──
+        print("\n" + "=" * 70)
+        print("MOT EVALUATION RESULTS")
+        print("=" * 70)
 
-    # Rename columns for readability
-    summary.columns = ["Frames", "MOTA", "MOTP", "ID Sw.",
-                        "FP", "FN", "Prec.", "Recall", "IDF1"]
+        mh = mm.metrics.create()
 
-    print(mm.io.render_summary(summary, namemap={}, formatters=mh.formatters))
+        # Per-sequence metrics
+        summary = mh.compute_many(
+            accumulators, names=seq_names,
+            metrics=["num_frames", "mota", "motp", "num_switches",
+                     "num_false_positives", "num_misses",
+                     "precision", "recall", "idf1"],
+            generate_overall=True,
+        )
 
-    # ── Extract headline numbers ──
-    overall = summary.loc["OVERALL"]
-    mota_pct = overall["MOTA"] * 100
-    id_switches = int(overall["ID Sw."])
-    n_seqs = len(seq_names)
+        # Rename columns for readability
+        summary.columns = ["Frames", "MOTA", "MOTP", "ID Sw.",
+                            "FP", "FN", "Prec.", "Recall", "IDF1"]
 
-    print("\n" + "-" * 70)
-    print("SUMMARY:")
-    print(f'  MOTA: {mota_pct:.1f}%  |  ID Switches: {id_switches}  |  Sequences: {n_seqs}')
-    print("-" * 70)
+        print(mm.io.render_summary(summary, namemap={}, formatters=mh.formatters))
+
+        # ── Extract headline numbers ──
+        overall = summary.loc["OVERALL"]
+        mota_pct = overall["MOTA"] * 100
+        id_switches = int(overall["ID Sw."])
+        n_seqs = len(seq_names)
+
+        print("\n" + "-" * 70)
+        print("SUMMARY:")
+        print(f'  MOTA: {mota_pct:.1f}%  |  ID Switches: {id_switches}  |  Sequences: {n_seqs}')
+        print("-" * 70)
+
+    finally:
+        if _outfile:
+            _outfile.close()
 
 
 if __name__ == "__main__":
