@@ -501,10 +501,8 @@ def main():
     n_seqs = len(seq_names)
 
     print("\n" + "-" * 70)
-    print("FOR YOUR RESUME:")
-    print(f'  "...achieved MOTA of {mota_pct:.1f}% '
-          f'with {id_switches} ID switches '
-          f'across {n_seqs} test sequences."')
+    print("SUMMARY:")
+    print(f'  MOTA: {mota_pct:.1f}%  |  ID Switches: {id_switches}  |  Sequences: {n_seqs}')
     print("-" * 70)
 
 
