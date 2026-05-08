@@ -406,12 +406,16 @@ def evaluate_sequence(seq_name, mot16_root, detector, embed_model, device,
 
 # ── Tee: write to stdout and a file simultaneously ────────────────────────
 class _Tee:
+    """Replaces sys.stdout when --output is given, mirroring all print() calls
+    to both the terminal and the output file. Carriage-return-only lines (the
+    per-frame progress updates that overwrite each other in the terminal) are
+    suppressed in the file so it stays readable."""
     def __init__(self, file, stdout):
         self._file = file
         self._stdout = stdout
     def write(self, data):
         self._stdout.write(data)
-        # Skip \r-only progress updates — they overwrite in terminal but pile up in files
+        # \r-only lines overwrite in terminal but pile up verbatim in files
         if not (data.endswith('\r') and '\n' not in data):
             self._file.write(data)
     def flush(self):
