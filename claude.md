@@ -6,16 +6,16 @@ TrackVision is a deep-learning multi-object tracking system that detects pedestr
 
 ## Tech stack
 
-- Language: Python 3.10+
+- Language: Python 3.10 (effectively required — pandas 1.5.x has no wheels for 3.12+)
 - Framework: PyTorch 2.x (uses torch.amp for mixed precision), torchvision (Faster R-CNN R50-FPN)
 - Tracking: filterpy (Kalman filter), scipy.optimize.linear_sum_assignment (Hungarian matching)
 - Evaluation: motmetrics
 - UI: Streamlit
 - Video I/O: opencv-python, ffmpeg (system binary, used for H.264 re-encode)
-- Other: numpy, scipy, Pillow
+- Other: numpy<2.0, scipy, Pillow
 - Compute: Google Colab Pro (GPU) for training; local machine for inference, eval, and Streamlit UI
 
-Versions are intentionally not pinned — the project runs on Colab's default stack at time of training.
+Colab runs unpinned. Local requires `pandas<2.0` and `numpy<2.0` — motmetrics 1.4.0 is incompatible with pandas 2+.
 
 ## Commands
 
