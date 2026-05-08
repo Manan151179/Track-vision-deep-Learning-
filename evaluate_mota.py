@@ -138,6 +138,9 @@ class Track:
         self.track_id = track_id
         self.kf = _make_kf(box)
         self.embedding = embedding.copy()
+        # last_box holds the most-recent raw detection; used as the position
+        # estimate when KF is disabled (--no-kf ablation mode).
+        self.last_box = np.array(box, dtype=float)
         self.hits = 1
         self.time_since_update = 0
 
@@ -151,7 +154,7 @@ class Track:
 # ── Tracker (DeepSORT-style: KF + fused cost matrix + lifecycle) ──────────
 class Tracker:
     def __init__(self, sim_threshold=0.85, ema_alpha=0.9, max_age=30,
-                 min_hits=3, appearance_weight=0.5):
+                 min_hits=3, appearance_weight=0.5, use_kalman=True):
         self.tracks = {}
         self.next_id = 1
         self.sim_threshold = sim_threshold
@@ -159,6 +162,7 @@ class Tracker:
         self.max_age = max_age
         self.min_hits = min_hits
         self.appearance_weight = appearance_weight
+        self.use_kalman = use_kalman
 
     def update(self, boxes, embeddings):
         """
@@ -169,9 +173,12 @@ class Tracker:
         n = len(embeddings)
         boxes = np.array(boxes, dtype=float) if n > 0 else np.empty((0, 4))
 
-        # Step 1+2: KF predict + age all tracks
+        # Step 1+2: KF predict + age all tracks.
+        # When KF is disabled we still increment time_since_update — track
+        # deletion logic is independent of the motion model.
         for t in self.tracks.values():
-            t.predict()
+            if self.use_kalman:
+                t.predict()
             t.time_since_update += 1
 
         assigned = [-1] * n
@@ -183,7 +190,13 @@ class Tracker:
             track_embs = np.stack([self.tracks[k].embedding for k in track_ids])
             det_embs   = np.stack(embeddings)
             app_cost   = np.clip(cdist(det_embs, track_embs, metric="cosine"), 0., 1.)
-            pred_boxes = np.stack([self.tracks[k].predicted_box for k in track_ids])
+            # KF mode: use KF-predicted box (motion-extrapolated position).
+            # No-KF mode: use last observed box — no temporal extrapolation,
+            # so IoU drops faster when a track is missed for several frames.
+            if self.use_kalman:
+                pred_boxes = np.stack([self.tracks[k].predicted_box for k in track_ids])
+            else:
+                pred_boxes = np.stack([self.tracks[k].last_box for k in track_ids])
             iou_mat    = _iou_matrix(boxes, pred_boxes)
             motion_cost = 1.0 - iou_mat
             α = self.appearance_weight
@@ -197,7 +210,12 @@ class Tracker:
 
                 tid = track_ids[c]
                 t   = self.tracks[tid]
-                t.kf_update(boxes[r])   # Step 6: KF measurement update
+                # Step 6: update position.
+                # KF mode: correct the filter with the new measurement.
+                # No-KF mode: just record the raw box for next frame's IoU cost.
+                if self.use_kalman:
+                    t.kf_update(boxes[r])
+                t.last_box = boxes[r].copy()
                 t.embedding = self.ema_alpha * t.embedding + (1-self.ema_alpha) * embeddings[r]
                 t.hits += 1
                 t.time_since_update = 0
@@ -295,7 +313,8 @@ def load_models(device, detector_path, reid_path):
 
 # ── Evaluate one sequence ─────────────────────────────────────────────────
 def evaluate_sequence(seq_name, mot16_root, detector, embed_model, device,
-                      det_thresh, sim_thresh, ema_alpha, iou_thresh=0.5):
+                      det_thresh, sim_thresh, ema_alpha, iou_thresh=0.5,
+                      use_kalman=True):
     """Run tracker on a sequence and compute MOT metrics."""
     seq_path = os.path.join(mot16_root, "train", seq_name)
     gt_path = os.path.join(seq_path, "gt", "gt.txt")
@@ -319,7 +338,8 @@ def evaluate_sequence(seq_name, mot16_root, detector, embed_model, device,
         return None
 
     # Initialize tracker
-    tracker = Tracker(sim_threshold=sim_thresh, ema_alpha=ema_alpha)
+    tracker = Tracker(sim_threshold=sim_thresh, ema_alpha=ema_alpha,
+                      use_kalman=use_kalman)
 
     # motmetrics accumulator
     acc = mm.MOTAccumulator(auto_id=True)
@@ -455,6 +475,8 @@ def main():
                         help="Save results to this file in addition to stdout")
     parser.add_argument("--force", action="store_true",
                         help="Overwrite --output file if it already exists")
+    parser.add_argument("--no-kf", action="store_true",
+                        help="Disable Kalman filter (ablation: pure IoU + appearance matching, no motion prediction)")
 
     args = parser.parse_args()
 
@@ -485,7 +507,10 @@ def main():
         detector, embed_model = load_models(
             device, args.detector_weights, args.reid_weights
         )
-        print("Models loaded ✓\n")
+        use_kalman = not args.no_kf
+        mode_str = "WITH Kalman filter" if use_kalman else "WITHOUT Kalman filter (--no-kf ablation)"
+        print(f"Models loaded ✓\n")
+        print(f"Tracking mode: {mode_str}\n")
 
         # ── Evaluate each sequence ──
         accumulators = []
@@ -496,6 +521,7 @@ def main():
             acc = evaluate_sequence(
                 seq, args.mot16_root, detector, embed_model, device,
                 args.det_thresh, args.sim_thresh, args.ema_alpha, args.iou_thresh,
+                use_kalman=use_kalman,
             )
             if acc is not None:
                 accumulators.append(acc)
