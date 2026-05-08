@@ -25,6 +25,8 @@ python evaluate_mota.py                                        # Eval on all 7 M
 python evaluate_mota.py --sequences MOT16-09                   # Single sequence (~3 min GPU)
 python evaluate_mota.py --det-thresh 0.75                      # Override defaults
 python evaluate_mota.py --output results.txt                   # Save output to file (--force to overwrite)
+python evaluate_mota.py --no-kf                                # Ablation: disable Kalman filter (pure IoU + appearance)
+python evaluate_mota.py --no-kf --output results-no-kf.txt    # Ablation run saved to file
 Install
 pip install -r requirements.txt                 # includes filterpy and motmetrics
 pip install "pandas<2.0" "numpy<2.0"            # required locally for motmetrics compatibility
