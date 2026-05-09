@@ -1,0 +1,38 @@
+Device: CUDA (NVIDIA GeForce RTX 3060)
+Loading models...
+Models loaded ✓
+
+Tracking mode: WITHOUT Kalman filter (--no-kf ablation)
+
+Evaluating MOT16-02...
+  MOT16-02: 600 frames in 74.5s (8.1 FPS)  32 unique IDs
+Evaluating MOT16-04...
+  MOT16-04: 1050 frames in 137.7s (7.6 FPS)  44 unique IDs
+Evaluating MOT16-05...
+  MOT16-05: 837 frames in 69.2s (12.1 FPS)  23 unique IDs
+Evaluating MOT16-09...
+  MOT16-09: 525 frames in 61.2s (8.6 FPS)  16 unique IDs
+Evaluating MOT16-10...
+  MOT16-10: 654 frames in 73.4s (8.9 FPS)  22 unique IDs
+Evaluating MOT16-11...
+  MOT16-11: 900 frames in 108.0s (8.3 FPS)  35 unique IDs
+Evaluating MOT16-13...
+  MOT16-13: 750 frames in 82.3s (9.1 FPS)  12 unique IDs
+
+======================================================================
+MOT EVALUATION RESULTS
+======================================================================
+          Frames      MOTA      MOTP  ID Sw.    FP     FN     Prec.    Recall      IDF1
+MOT16-02     600  0.514944  0.190001     339   962   7349  0.915953  0.587899  0.453431
+MOT16-04    1050  0.740543  0.153372     132   516  11691  0.985817  0.754169  0.717235
+MOT16-05     837  0.594603  0.201405     250   949   1565  0.846985  0.770461  0.540553
+MOT16-09     525  0.687084  0.151529      98   373   1174  0.916293  0.776679  0.551632
+MOT16-10     654  0.623559  0.212515     384   965   3288  0.903452  0.733074  0.467799
+MOT16-11     900  0.736974  0.136160     146   729   1538  0.912851  0.832352  0.647243
+MOT16-13     750  0.527860  0.212759     841  1192   3373  0.871399  0.705415  0.389980
+OVERALL     5316  0.657141  0.172160    2190  5686  29978  0.933972  0.728477  0.588972
+
+----------------------------------------------------------------------
+SUMMARY:
+  MOTA: 65.7%  |  ID Switches: 2190  |  Sequences: 7
+----------------------------------------------------------------------

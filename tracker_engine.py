@@ -184,6 +184,9 @@ class Track:
         self.track_id = track_id
         self.kf = _make_kf(box)           # one KF per identity
         self.embedding = embedding.copy()
+        # last_box holds the most-recent raw detection; used as the position
+        # estimate when KF is disabled (use_kalman=False ablation mode).
+        self.last_box = np.array(box, dtype=float)
         self.hits: int = 1
         self.time_since_update: int = 0
 
@@ -242,6 +245,7 @@ class Tracker:
         max_age: int = 30,
         min_hits: int = 3,
         appearance_weight: float = 0.5,
+        use_kalman: bool = True,
     ):
         """
         Parameters
@@ -253,6 +257,8 @@ class Tracker:
         appearance_weight : α in  cost = α·cosine_dist + (1-α)·(1-IoU).
                             0 → pure IoU/motion;  1 → pure appearance.
                             Default 0.5 = equal blend.
+        use_kalman        : If False, skip KF predict/update and use last
+                            observed box for IoU cost (ablation mode).
         """
         self.tracks: dict[int, Track] = {}
         self.next_id: int = 1
@@ -261,6 +267,7 @@ class Tracker:
         self.max_age = max_age
         self.min_hits = min_hits
         self.appearance_weight = appearance_weight   # α
+        self.use_kalman = use_kalman
 
     # ------------------------------------------------------------------
     # Public API
@@ -289,8 +296,11 @@ class Tracker:
         # ── Step 1 & 2: KF predict + age ALL tracks ──────────────────────
         # predict() projects each track's state forward one time-step,
         # giving a kinematic estimate of where the person is *this* frame.
+        # When KF is disabled we still increment time_since_update — track
+        # deletion logic is independent of the motion model.
         for track in self.tracks.values():
-            track.predict()                  # advance KF
+            if self.use_kalman:
+                track.predict()              # advance KF
             track.time_since_update += 1     # presumed lost until matched
 
         assigned = [-1] * n
@@ -312,9 +322,17 @@ class Tracker:
             app_cost   = np.clip(app_cost, 0.0, 1.0)
 
             # --- Motion cost (1 - IoU between det_box and KF prediction) ---
-            pred_boxes = np.stack(
-                [self.tracks[k].predicted_box for k in track_ids]
-            )  # (N_track, 4)
+            # KF mode: use KF-predicted box (motion-extrapolated position).
+            # No-KF mode: use last observed box — no temporal extrapolation,
+            # so IoU drops faster when a track is missed for several frames.
+            if self.use_kalman:
+                pred_boxes = np.stack(
+                    [self.tracks[k].predicted_box for k in track_ids]
+                )  # (N_track, 4)
+            else:
+                pred_boxes = np.stack(
+                    [self.tracks[k].last_box for k in track_ids]
+                )  # (N_track, 4)
             iou_mat    = _iou_matrix(boxes, pred_boxes)  # (N_det, N_track)
             motion_cost = 1.0 - iou_mat                  # in [0,1]
 
@@ -338,9 +356,12 @@ class Tracker:
                 tid   = track_ids[c]
                 track = self.tracks[tid]
 
-                # ── Step 6: KF measurement update ────────────────────────
-                # Correct the KF with the detector's measurement this frame.
-                track.kf_update(boxes[r])
+                # ── Step 6: update position ──────────────────────────────
+                # KF mode: correct the filter with the new measurement.
+                # No-KF mode: just record the raw box for next frame's IoU cost.
+                if self.use_kalman:
+                    track.kf_update(boxes[r])
+                track.last_box = boxes[r].copy()
 
                 # ── Step 7: EMA embedding update ─────────────────────────
                 track.embedding = (
@@ -487,6 +508,7 @@ def process_video(
     max_age: int = 30,
     min_hits: int = 3,
     output_fps: int = 25,
+    use_kalman: bool = True,
     progress_callback: Optional[Callable[[float, str], None]] = None,
 ) -> dict:
     """
@@ -495,8 +517,9 @@ def process_video(
 
     Parameters
     ----------
-    max_age  : Frames a track can be unmatched before being deleted (default 30).
-    min_hits : Frames a track must be matched before its ID is drawn (default 3).
+    max_age    : Frames a track can be unmatched before being deleted (default 30).
+    min_hits   : Frames a track must be matched before its ID is drawn (default 3).
+    use_kalman : If False, skip KF motion prediction (ablation mode).
     progress_callback : callable(progress: float, message: str)
         Called once per frame with progress in [0, 1] and a status string.
 
@@ -521,6 +544,7 @@ def process_video(
         ema_alpha=ema_alpha,
         max_age=max_age,
         min_hits=min_hits,
+        use_kalman=use_kalman,
     )
 
     t0 = time.time()

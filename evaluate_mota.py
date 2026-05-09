@@ -138,6 +138,9 @@ class Track:
         self.track_id = track_id
         self.kf = _make_kf(box)
         self.embedding = embedding.copy()
+        # last_box holds the most-recent raw detection; used as the position
+        # estimate when KF is disabled (--no-kf ablation mode).
+        self.last_box = np.array(box, dtype=float)
         self.hits = 1
         self.time_since_update = 0
 
@@ -151,7 +154,7 @@ class Track:
 # ── Tracker (DeepSORT-style: KF + fused cost matrix + lifecycle) ──────────
 class Tracker:
     def __init__(self, sim_threshold=0.85, ema_alpha=0.9, max_age=30,
-                 min_hits=3, appearance_weight=0.5):
+                 min_hits=3, appearance_weight=0.5, use_kalman=True):
         self.tracks = {}
         self.next_id = 1
         self.sim_threshold = sim_threshold
@@ -159,6 +162,7 @@ class Tracker:
         self.max_age = max_age
         self.min_hits = min_hits
         self.appearance_weight = appearance_weight
+        self.use_kalman = use_kalman
 
     def update(self, boxes, embeddings):
         """
@@ -169,9 +173,12 @@ class Tracker:
         n = len(embeddings)
         boxes = np.array(boxes, dtype=float) if n > 0 else np.empty((0, 4))
 
-        # Step 1+2: KF predict + age all tracks
+        # Step 1+2: KF predict + age all tracks.
+        # When KF is disabled we still increment time_since_update — track
+        # deletion logic is independent of the motion model.
         for t in self.tracks.values():
-            t.predict()
+            if self.use_kalman:
+                t.predict()
             t.time_since_update += 1
 
         assigned = [-1] * n
@@ -183,7 +190,13 @@ class Tracker:
             track_embs = np.stack([self.tracks[k].embedding for k in track_ids])
             det_embs   = np.stack(embeddings)
             app_cost   = np.clip(cdist(det_embs, track_embs, metric="cosine"), 0., 1.)
-            pred_boxes = np.stack([self.tracks[k].predicted_box for k in track_ids])
+            # KF mode: use KF-predicted box (motion-extrapolated position).
+            # No-KF mode: use last observed box — no temporal extrapolation,
+            # so IoU drops faster when a track is missed for several frames.
+            if self.use_kalman:
+                pred_boxes = np.stack([self.tracks[k].predicted_box for k in track_ids])
+            else:
+                pred_boxes = np.stack([self.tracks[k].last_box for k in track_ids])
             iou_mat    = _iou_matrix(boxes, pred_boxes)
             motion_cost = 1.0 - iou_mat
             α = self.appearance_weight
@@ -197,7 +210,12 @@ class Tracker:
 
                 tid = track_ids[c]
                 t   = self.tracks[tid]
-                t.kf_update(boxes[r])   # Step 6: KF measurement update
+                # Step 6: update position.
+                # KF mode: correct the filter with the new measurement.
+                # No-KF mode: just record the raw box for next frame's IoU cost.
+                if self.use_kalman:
+                    t.kf_update(boxes[r])
+                t.last_box = boxes[r].copy()
                 t.embedding = self.ema_alpha * t.embedding + (1-self.ema_alpha) * embeddings[r]
                 t.hits += 1
                 t.time_since_update = 0
@@ -295,7 +313,8 @@ def load_models(device, detector_path, reid_path):
 
 # ── Evaluate one sequence ─────────────────────────────────────────────────
 def evaluate_sequence(seq_name, mot16_root, detector, embed_model, device,
-                      det_thresh, sim_thresh, ema_alpha, iou_thresh=0.5):
+                      det_thresh, sim_thresh, ema_alpha, iou_thresh=0.5,
+                      use_kalman=True):
     """Run tracker on a sequence and compute MOT metrics."""
     seq_path = os.path.join(mot16_root, "train", seq_name)
     gt_path = os.path.join(seq_path, "gt", "gt.txt")
@@ -319,7 +338,8 @@ def evaluate_sequence(seq_name, mot16_root, detector, embed_model, device,
         return None
 
     # Initialize tracker
-    tracker = Tracker(sim_threshold=sim_thresh, ema_alpha=ema_alpha)
+    tracker = Tracker(sim_threshold=sim_thresh, ema_alpha=ema_alpha,
+                      use_kalman=use_kalman)
 
     # motmetrics accumulator
     acc = mm.MOTAccumulator(auto_id=True)
@@ -404,6 +424,25 @@ def evaluate_sequence(seq_name, mot16_root, detector, embed_model, device,
     return acc
 
 
+# ── Tee: write to stdout and a file simultaneously ────────────────────────
+class _Tee:
+    """Replaces sys.stdout when --output is given, mirroring all print() calls
+    to both the terminal and the output file. Carriage-return-only lines (the
+    per-frame progress updates that overwrite each other in the terminal) are
+    suppressed in the file so it stays readable."""
+    def __init__(self, file, stdout):
+        self._file = file
+        self._stdout = stdout
+    def write(self, data):
+        self._stdout.write(data)
+        # \r-only lines overwrite in terminal but pile up verbatim in files
+        if not (data.endswith('\r') and '\n' not in data):
+            self._file.write(data)
+    def flush(self):
+        self._stdout.flush()
+        self._file.flush()
+
+
 # ── Main ──────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(
@@ -432,76 +471,104 @@ def main():
     parser.add_argument("--ema-alpha", type=float, default=0.90)
     parser.add_argument("--iou-thresh", type=float, default=0.5,
                         help="IoU threshold for matching (default: 0.5)")
+    parser.add_argument("--output", default=None,
+                        help="Save results to this file in addition to stdout")
+    parser.add_argument("--force", action="store_true",
+                        help="Overwrite --output file if it already exists")
+    parser.add_argument("--no-kf", action="store_true",
+                        help="Disable Kalman filter (ablation: pure IoU + appearance matching, no motion prediction)")
 
     args = parser.parse_args()
 
-    # ── Device ──
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        print(f"Device: CUDA ({torch.cuda.get_device_name(0)})")
-    else:
-        device = torch.device("cpu")
-        print("Device: CPU (no GPU — this will be slow but works fine)")
+    if args.output and os.path.exists(args.output) and not args.force:
+        print(f"[!] Output file already exists: {args.output}")
+        print("    Use --force to overwrite.")
+        sys.exit(1)
 
-    # ── Load models ──
-    print("Loading models...")
-    detector, embed_model = load_models(
-        device, args.detector_weights, args.reid_weights
-    )
-    print("Models loaded ✓\n")
+    # ── Reconfigure stdout encoding ──
+    sys.stdout.reconfigure(encoding="utf-8")
 
-    # ── Evaluate each sequence ──
-    accumulators = []
-    seq_names = []
+    _outfile = None
+    try:
+        if args.output:
+            _outfile = open(args.output, "w", encoding="utf-8")
+            sys.stdout = _Tee(_outfile, sys.stdout)
 
-    for seq in args.sequences:
-        print(f"Evaluating {seq}...")
-        acc = evaluate_sequence(
-            seq, args.mot16_root, detector, embed_model, device,
-            args.det_thresh, args.sim_thresh, args.ema_alpha, args.iou_thresh,
+        # ── Device ──
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            print(f"Device: CUDA ({torch.cuda.get_device_name(0)})")
+        else:
+            device = torch.device("cpu")
+            print("Device: CPU (no GPU — this will be slow but works fine)")
+
+        # ── Load models ──
+        print("Loading models...")
+        detector, embed_model = load_models(
+            device, args.detector_weights, args.reid_weights
         )
-        if acc is not None:
-            accumulators.append(acc)
-            seq_names.append(seq)
+        use_kalman = not args.no_kf
+        mode_str = "WITH Kalman filter" if use_kalman else "WITHOUT Kalman filter (--no-kf ablation)"
+        print(f"Models loaded ✓\n")
+        print(f"Tracking mode: {mode_str}\n")
 
-    if not accumulators:
-        print("No sequences evaluated.")
-        return
+        # ── Evaluate each sequence ──
+        accumulators = []
+        seq_names = []
 
-    # ── Compute metrics ──
-    print("\n" + "=" * 70)
-    print("MOT EVALUATION RESULTS")
-    print("=" * 70)
+        for seq in args.sequences:
+            print(f"Evaluating {seq}...")
+            acc = evaluate_sequence(
+                seq, args.mot16_root, detector, embed_model, device,
+                args.det_thresh, args.sim_thresh, args.ema_alpha, args.iou_thresh,
+                use_kalman=use_kalman,
+            )
+            if acc is not None:
+                accumulators.append(acc)
+                seq_names.append(seq)
 
-    mh = mm.metrics.create()
+        if not accumulators:
+            print("No sequences evaluated.")
+            return
 
-    # Per-sequence metrics
-    summary = mh.compute_many(
-        accumulators, names=seq_names,
-        metrics=["num_frames", "mota", "motp", "num_switches",
-                 "num_false_positives", "num_misses",
-                 "precision", "recall", "idf1"],
-        generate_overall=True,
-    )
+        # ── Compute metrics ──
+        print("\n" + "=" * 70)
+        print("MOT EVALUATION RESULTS")
+        print("=" * 70)
 
-    # Rename columns for readability
-    summary.columns = ["Frames", "MOTA", "MOTP", "ID Sw.",
-                        "FP", "FN", "Prec.", "Recall", "IDF1"]
+        mh = mm.metrics.create()
 
-    print(mm.io.render_summary(summary, namemap={}, formatters=mh.formatters))
+        # Per-sequence metrics
+        summary = mh.compute_many(
+            accumulators, names=seq_names,
+            metrics=["num_frames", "mota", "motp", "num_switches",
+                     "num_false_positives", "num_misses",
+                     "precision", "recall", "idf1"],
+            generate_overall=True,
+        )
 
-    # ── Extract headline numbers ──
-    overall = summary.loc["OVERALL"]
-    mota_pct = overall["MOTA"] * 100
-    id_switches = int(overall["ID Sw."])
-    n_seqs = len(seq_names)
+        # Rename columns for readability
+        summary.columns = ["Frames", "MOTA", "MOTP", "ID Sw.",
+                            "FP", "FN", "Prec.", "Recall", "IDF1"]
 
-    print("\n" + "-" * 70)
-    print("FOR YOUR RESUME:")
-    print(f'  "...achieved MOTA of {mota_pct:.1f}% '
-          f'with {id_switches} ID switches '
-          f'across {n_seqs} test sequences."')
-    print("-" * 70)
+        print(mm.io.render_summary(summary, namemap={}, formatters=mh.formatters))
+
+        # ── Extract headline numbers ──
+        overall = summary.loc["OVERALL"]
+        mota_pct = overall["MOTA"] * 100
+        id_switches = int(overall["ID Sw."])
+        n_seqs = len(seq_names)
+
+        print("\n" + "-" * 70)
+        print("SUMMARY:")
+        print(f'  MOTA: {mota_pct:.1f}%  |  ID Switches: {id_switches}  |  Sequences: {n_seqs}')
+        print("-" * 70)
+
+    finally:
+        if _outfile:
+            # restore sys.stdout first, otherwise Python's shutdown tries to flush the _Tee
+            sys.stdout = sys.stdout._stdout
+            _outfile.close()
 
 
 if __name__ == "__main__":

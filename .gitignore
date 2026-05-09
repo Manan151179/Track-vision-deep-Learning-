@@ -18,3 +18,6 @@ __pycache__/
 
 # ── Visualisation output ──
 vis_output/
+
+# ── venv ──
+.venv/

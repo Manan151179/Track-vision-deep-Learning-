@@ -6,27 +6,30 @@ TrackVision is a deep-learning multi-object tracking system that detects pedestr
 
 ## Tech stack
 
-- Language: Python 3.10+
+- Language: Python 3.10 (effectively required — pandas 1.5.x has no wheels for 3.12+)
 - Framework: PyTorch 2.x (uses torch.amp for mixed precision), torchvision (Faster R-CNN R50-FPN)
 - Tracking: filterpy (Kalman filter), scipy.optimize.linear_sum_assignment (Hungarian matching)
 - Evaluation: motmetrics
 - UI: Streamlit
 - Video I/O: opencv-python, ffmpeg (system binary, used for H.264 re-encode)
-- Other: numpy, scipy, Pillow
+- Other: numpy<2.0, scipy, Pillow
 - Compute: Google Colab Pro (GPU) for training; local machine for inference, eval, and Streamlit UI
 
-Versions are intentionally not pinned — the project runs on Colab's default stack at time of training.
+Colab runs unpinned. Local requires `pandas<2.0` and `numpy<2.0` — motmetrics 1.4.0 is incompatible with pandas 2+.
 
 ## Commands
 
 Local development
-streamlit run app.py                              # Launch web UI on http://localhost:8501
-python evaluate_mota.py                           # Eval on all 7 MOT16 train sequences
-python evaluate_mota.py --sequences MOT16-09      # Single sequence (~3 min CPU)
-python evaluate_mota.py --det-thresh 0.75         # Override defaults
+streamlit run app.py                                           # Launch web UI on http://localhost:8501
+python evaluate_mota.py                                        # Eval on all 7 MOT16 train sequences
+python evaluate_mota.py --sequences MOT16-09                   # Single sequence (~3 min GPU)
+python evaluate_mota.py --det-thresh 0.75                      # Override defaults
+python evaluate_mota.py --output results.txt                   # Save output to file (--force to overwrite)
+python evaluate_mota.py --no-kf                                # Ablation: disable Kalman filter (pure IoU + appearance)
+python evaluate_mota.py --no-kf --output results-no-kf.txt    # Ablation run saved to file
 Install
-pip install -r requirements.txt
-pip install filterpy motmetrics                   # Currently NOT in requirements.txt
+pip install -r requirements.txt                 # includes filterpy and motmetrics
+pip install "pandas<2.0" "numpy<2.0"            # required locally for motmetrics compatibility
 Colab training (open deep_learning.ipynb on Colab Pro GPU)
 Cells 1-22:  data prep + sanity check
 Cells 23-27: Faster R-CNN fine-tuning (~20 min on A100)
@@ -56,7 +59,7 @@ Data flow per frame: image → Faster R-CNN (boxes with score ≥ DET_THRESH) �
 - The Siamese model definition is duplicated across `tracker_engine.py`, `evaluate_mota.py`, and `deep_learning.ipynb`. The `tracker_engine.py` version applies `F.normalize` inside `forward()`; the other two do not (they normalise post-hoc). Be aware when porting weights or refactoring.
 - Output videos default to OpenCV `mp4v` codec; always run an ffmpeg re-encode pass before sharing for browser playback. `app.py` does this automatically; the notebook does not.
 - MOT16 frames are 1-indexed (000001.jpg = frame 1) in both filenames and ground truth.
-- Metrics from `evaluate_mota.py` go to `baseline_metrics.txt`. Don't overwrite without committing the prior version first.
+- Metrics from `evaluate_mota.py` are saved via `--output` (e.g. `eval_results-full.txt`). Don't overwrite a prior results file without committing it first.
 
 ## Standing rules for Claude Code (DO NOT REMOVE)
 
