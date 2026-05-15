@@ -19,5 +19,8 @@ __pycache__/
 # ── Visualisation output ──
 vis_output/
 
+# ── Temp folder ──
+temp/
+
 # ── venv ──
 .venv/
